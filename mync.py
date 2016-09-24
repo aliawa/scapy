@@ -6,6 +6,8 @@ from scapy.all import *
 setipt  = None
 verbose = None 
 ts      = None
+files   = []
+order   = None
 
 class Log:
     INFO  = "INFO:"
@@ -41,6 +43,7 @@ def usage():
     print "    -p, --dport       destination port"
     print 
     print "Optional Parameters"
+    print "    -o, --sendorder   comma separated list of packet order"
     print "    -h, --help        Show help"
     print "    -r, --sport       source port"
     print "    -1, --src-mac     source MAC Address"
@@ -125,12 +128,18 @@ class tcp_param:
         if not self.dport:
             log("Please enter destination port number", Log.ERROR)
             return False
+
+        global order
+        if not order:
+            global files
+            order = range(1,len(files)+1)
+
         return True
 
 
     def readOpts(self):
         try:
-            opts, args = getopt.getopt(sys.argv[1:], "hvmis:d:p:r:1:2:t:l:q:", 
+            opts, args = getopt.getopt(sys.argv[1:], "hvmis:d:p:r:1:2:t:l:q:o:", 
                 ["help", "verbose", "timestring", "setipt=", 
                  "src-ip=", "dest-ip=", "sport=", "dport=", "src-mac=", "dest-mac=", 
                  "timeout=", "ttl=", "seqnum="])
@@ -168,10 +177,17 @@ class tcp_param:
                     self.ttl = int(a)
                 elif o in ("-q", "--seqnum"):
                     self.seqnum = a
+                elif o in ("-o", "--sendorder"):
+                    global order
+                    order = a.split(',')
                 else:
                     print "Unknown option, see usage below\n"
                     usage()
                     sys.exit(-1)
+
+        # list of files
+        global files
+        files = [ x for x in args]
 
         if not self.verify():
             usage()
@@ -180,10 +196,13 @@ class tcp_param:
 
 
 
+
+
+
 # Iptables configuration (Drop outgoing RST)
-def setIpTableRule():
+def setIpTableRule(params):
     iptables_flush_cmd = 'iptables -F'
-    iptables_cmd = 'iptables -A OUTPUT -p tcp -d ' + destip + ' --tcp-flags RST  RST --destination-port ' + str(dport) + ' -j DROP'
+    iptables_cmd = 'iptables -A OUTPUT -p tcp -d ' + params.destip + ' --tcp-flags RST  RST --destination-port ' + str(params.dport) + ' -j DROP'
     os.system(iptables_flush_cmd)
     os.system(iptables_cmd)
 
@@ -230,18 +249,22 @@ def sendFin(params, state):
 
 
 def sendData(params, state):
-    pkts=[]
-    for x in [1,2,3,4,5]:
-        mydata = open("reg_part" + str(x) + ".bin", 'r').read()
+    pkts = []
+    for f in files:
+        mydata = open(f, 'r').read()
         mydata = mydata.replace('[$src-ip]', params.srcip)
         mydata = mydata.replace('[$dst-ip]', params.destip)
+        mydata = mydata.replace('[$src-port]', str(params.sport))
+        mydata = mydata.replace('[$dst-port]', str(params.dport))
         pkts.append(state.createPacket(params, "PA", mydata))
 
-
-    for x in [1,4,5,2,3]:
-      print "sending pkt:", x
-      send (pkts[x-1])
-
+    for x in order:
+        i = int(x)
+        if i <= len(pkts):
+            print "sending pkt:", i
+            send (pkts[i-1])
+        else:
+            print "ignoring pkt:", i
 
 
 
@@ -254,13 +277,14 @@ def main():
     state = tcp_state(params)
 
     if setipt:
-        setIpTableRule()
+        setIpTableRule(params)
 
     if not doHandShake(params,state):
         log ("TCP Handshake failed", Log.ERROR)
         sys.exit(-1)
 
     sendData(params, state)
+    time.sleep(2)
     sendFin(params, state)
 
 
