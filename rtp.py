@@ -5,11 +5,13 @@ import optparse
 import SocketServer
 import socket
 from scapy.all import *
+import time
 
 def myprn(n):
     sys.stdout.write("\x1b7\x1b[10C%d\x1b8" % (n))
     sys.stdout.flush()
 
+#conf.iface='eth1'
 
 # -----------------------------------------------------------------------
 #
@@ -18,7 +20,7 @@ def myprn(n):
 # -----------------------------------------------------------------------
 
 
-class rtpListner(threading.Thread):
+class RtpListner(threading.Thread):
     def __init__(self, threadID, name, addr):
         threading.Thread.__init__(self)
         self.threadID = threadID
@@ -65,14 +67,15 @@ class RtpSender (threading.Thread):
     def run(self):
         print "Starting " + self.name
         pkts = rdpcap(self.pcap)
+        n=0
         for pkt in pkts:
-            pkt[IP].src = self.saddr[0]
-            pkt[IP].dst = self.daddr[0]
-            pkt[UDP].sport = self.saddr[1]
-            pkt[UDP].dport = self.daddr[1]
-            del(pkt[Ether].src)
-            del(pkt[Ether].dst)
-            send(pkt, verbose=0, realtime=True)
+            sendp(Ether()/IP(dst=self.daddr[0], src=self.saddr[0])/UDP(sport=
+                self.saddr[1], dport=self.daddr[1])/pkt[Raw], verbose=0,
+                iface="eth1")
+            n+=1
+            sys.stdout.write("\x1b7\x1b[20CSent:%d\x1b8" % (n))
+            sys.stdout.flush()
+            time.sleep(0.03) # 30 ms
         print "Exiting " + self.name
 
     def stop(self):
@@ -142,13 +145,14 @@ class ControlServer:
 
     def startListner(self, addr):
         print "starting rtp-listner on {}:{}".format(addr[0], addr[1])
-        self.rtpListner = rtpListner(1, "rtp-listner", (addr[0], int(addr[1])))
+        self.rtpListner = RtpListner(1, "rtp-listner", (addr[0], int(addr[1])))
         self.rtpListner.start()
 
     def stopListner(self):
         if (self.rtpListner):
             print "stoping rtp-listner"
             self.rtpListner.stop()
+            self.rtpListner=None
 
     def startSender(self, adr):
         print "starting rtp-sender {}:{} -> {}:{}".format(adr[0], adr[1], adr[2], adr[3])
