@@ -15,7 +15,7 @@ class printScreen:
         sz = os.get_terminal_size()
         self.lines = sz.lines
         sys.stdout.write("\x1b[s")
-        print("\n\n\n")
+        print("\n")
     def receiver(self, value):
         sys.stdout.write("\x1b[{};0H\x1b[KReceived: 00000\tOn:  {}".format(
             self.lines-2, value))
@@ -29,6 +29,9 @@ class printScreen:
         sys.stdout.write("\x1b[{};0H\x1b[K{}".format(
             self.lines, value))
         sys.stdout.flush()
+        logging.info(value)
+    def error(self, value):
+        logging.error(value)
     def received(self, value):
         sys.stdout.write("\x1b[{};11H{:0>5}\x1b[u".format(
             self.lines-2, value))
@@ -174,19 +177,25 @@ class ControlServer:
                     conn.close()
                     break
 
-    def startListner(self, addr):
-        self.rtpListner = RtpListner(1, "rtp-listner", (addr[0], int(addr[1])), addr[2])
-        self.rtpListner.start()
+    def startListner(self, args):
+        if (len(args) < 3):
+            PS.error("Bad start_listen command {}".format(args))
+        else:
+            self.rtpListner = RtpListner(1, "rtp-listner", (args[0], int(args[1])), args[2])
+            self.rtpListner.start()
 
     def stopListner(self):
         if (self.rtpListner):
             self.rtpListner.stop()
             self.rtpListner=None
 
-    def startSender(self, adr):
-        self.rtpSender = RtpSender(2, "rtp-sender", "g711a.pcap",
-                (adr[0], int(adr[1])), (adr[2], int(adr[3])))
-        self.rtpSender.start()
+    def startSender(self, args):
+        if (len(args) < 3):
+            PS.error("Bad start_sender command".format(args))
+        else:
+            self.rtpSender = RtpSender(2, "rtp-sender", "g711a.pcap",
+                    (args[0], int(args[1])), (args[2], int(args[3])))
+            self.rtpSender.start()
 
     def stopSender(self):
         self.rtpSender=None
@@ -208,7 +217,7 @@ def main():
                     This program listens for commands on the control socket.
                     example: rtp.py 127.0.0.1 9898
                     The commands are:
-                    * start_listner <remote-ip> <listen-ip> <listen-port>
+                    * start_listner <listen-ip> <listen-port> <remote-ip>
                     * stop_listenen
                     * start_sender <send-ip> <send-port> <remote-ip> <remote-port>
                     * stop_sender
@@ -219,6 +228,11 @@ def main():
     parser.add_argument("ip", help="control socket ip address")
     parser.add_argument("port", type=int, help="control socket port")
     args = parser.parse_args()
+
+    logging.basicConfig(format='%(levelname)s:%(message)s',
+        filemode='w',  
+        filename="rtp.py.log",
+        level=logging.DEBUG)
 
     global PS
     PS = printScreen()
