@@ -1,55 +1,90 @@
 #!/usr/bin/python
 
 import threading
-import optparse
-import SocketServer
+import argparse
 import socket
 from scapy.all import *
 import time
+import sys
+import os
+import textwrap
 
-def myprn(n):
-    sys.stdout.write("\x1b7\x1b[10C%d\x1b8" % (n))
-    sys.stdout.flush()
 
-#conf.iface='eth1'
+class printScreen:
+    def __init__(self):
+        sz = os.get_terminal_size()
+        self.lines = sz.lines
+        sys.stdout.write("\x1b[s")
+        print("\n\n\n")
+    def receiver(self, value):
+        sys.stdout.write("\x1b[{};0H\x1b[KReceived: 00000\tOn:  {}".format(
+            self.lines-2, value))
+        sys.stdout.flush()
+        pass
+    def sender(self, value):
+        sys.stdout.write("\x1b[{};0H\x1b[KSent:     00000\tTo:  {}".format(
+            self.lines-1, value))
+        sys.stdout.flush()
+    def status(self, value):
+        sys.stdout.write("\x1b[{};0H\x1b[K{}".format(
+            self.lines, value))
+        sys.stdout.flush()
+    def received(self, value):
+        sys.stdout.write("\x1b[{};11H{:0>5}\x1b[u".format(
+            self.lines-2, value))
+        sys.stdout.flush()
+    def sent(self, value):
+        sys.stdout.write("\x1b[{};11H{:0>5}\x1b[u".format(
+            self.lines-1, value))
+        sys.stdout.flush()
+    def restore(self):
+        sys.stdout.write("\x1b[u")
+        sys.stdout.flush()
+
+PS = None
+
 
 # -----------------------------------------------------------------------
 #
-#                                rtpListner
+#                                RtpListner
 #
 # -----------------------------------------------------------------------
-
 
 class RtpListner(threading.Thread):
-    def __init__(self, threadID, name, addr):
+    def __init__(self, threadID, name, addr, srcip):
         threading.Thread.__init__(self)
         self.threadID = threadID
         self.name = name
         self.addr = addr
         self.ctrlSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.count = 0
+        self.saddr = srcip
 
     def run(self):
-        print "Starting " + self.name
-        fltr = "udp and dst port {port}".format(ip=self.addr[0], port=self.addr[1])
-        pkts = sniff(prn=self.onRTP, 
-                stop_filter=lambda x:x.haslayer(UDP) and x[UDP].len==0, filter=fltr) 
-        print "Exiting " + self.name
+        PS.receiver("{}:{}".format(self.addr[0], self.addr[1]))
+        fltr = "udp and dst port {dport} and ( src host {src} or src host 127.0.0.1)".format(
+                src=self.saddr, 
+                dport=self.addr[1])
+        sniff(prn=self.onRTP, 
+                stop_filter=lambda x:(UDP in x) and x[UDP].len<10, filter=fltr,
+                store=0) 
+        PS.status("Exiting " + self.name)
 
     def stop(self):
-        print "Stopping rtp listner on {ip}:{port}".format(ip=self.addr[0], port=self.addr[1])
-        self.ctrlSock.sendto("", (self.addr[0], int(self.addr[1])))
+        self.ctrlSock.sendto(b"x", ("127.0.0.1", int(self.addr[1])))
 
     def onRTP(self, pkt):
         if (UDP in pkt and pkt[UDP].len == 260):
             self.count+=1
-            sys.stdout.write("Received: {}\r".format(self.count))
-            sys.stdout.flush()
+            PS.received(self.count)
+        else:
+            pass
+            #print "Unknown RTP packet received:", pkt.summary()
 
 
 # -----------------------------------------------------------------------
 #
-#                                rtpSender
+#                                RtpSender
 #
 # -----------------------------------------------------------------------
 
@@ -65,7 +100,7 @@ class RtpSender (threading.Thread):
         self.count = 0
 
     def run(self):
-        print "Starting " + self.name
+        PS.sender("{}:{}".format(self.daddr[0], self.daddr[1]))
         pkts = rdpcap(self.pcap)
         n=0
         for pkt in pkts:
@@ -73,10 +108,9 @@ class RtpSender (threading.Thread):
                 self.saddr[1], dport=self.daddr[1])/pkt[Raw], verbose=0,
                 iface="eth1")
             n+=1
-            sys.stdout.write("\x1b7\x1b[20CSent:%d\x1b8" % (n))
-            sys.stdout.flush()
+            PS.sent(n)
             time.sleep(0.03) # 30 ms
-        print "Exiting " + self.name
+        PS.status("Exiting " + self.name)
 
     def stop(self):
         pass
@@ -88,7 +122,7 @@ class RtpSender (threading.Thread):
 #
 # -----------------------------------------------------------------------
 
-class controllerThread (threading.Thread):
+class ControllerThread (threading.Thread):
     def __init__(self, threadID, name, addr):
         threading.Thread.__init__(self)
         self.threadID = threadID
@@ -96,9 +130,7 @@ class controllerThread (threading.Thread):
         self.server = ControlServer(addr)
 
     def run(self):
-        print "Starting " + self.name
         self.server.listen()
-        print "Exiting " + self.name
 
     def stop(self):
         self.server.shutdown()
@@ -112,19 +144,19 @@ class ControlServer:
 
 
     def listen(self):
-        print 'Opening Control socket'
         self.s.listen(1)
         while 1:
+            PS.status("Listning ...")
             conn, addr = self.s.accept()
-            print 'Connection address:', addr
+            PS.status("Accepted connection from {}".format(addr))
             while 1:
-                data = conn.recv(1024)
-                print "received data:", data
+                byteData = conn.recv(1024)
+                data = byteData.decode("utf-8")
                 if data.find("start_listner") != -1:
                     # first stop the existing rtp listner
                     self.stopListner()
                     pos = data.find("start_listner")
-                    self.startListner(data[pos+14:].split(" ",2))
+                    self.startListner(data[pos+14:].split(" ",3))
 
                 elif data.find("start_sender") != -1:
                     # first stop the existing rtp listner
@@ -139,28 +171,25 @@ class ControlServer:
                     self.stopListner()
 
                 else:
-                    print 'Closing control connection'
                     conn.close()
                     break
 
     def startListner(self, addr):
-        print "starting rtp-listner on {}:{}".format(addr[0], addr[1])
-        self.rtpListner = RtpListner(1, "rtp-listner", (addr[0], int(addr[1])))
+        self.rtpListner = RtpListner(1, "rtp-listner", (addr[0], int(addr[1])), addr[2])
         self.rtpListner.start()
 
     def stopListner(self):
         if (self.rtpListner):
-            print "stoping rtp-listner"
             self.rtpListner.stop()
             self.rtpListner=None
 
     def startSender(self, adr):
-        print "starting rtp-sender {}:{} -> {}:{}".format(adr[0], adr[1], adr[2], adr[3])
         self.rtpSender = RtpSender(2, "rtp-sender", "g711a.pcap",
                 (adr[0], int(adr[1])), (adr[2], int(adr[3])))
         self.rtpSender.start()
 
     def stopSender(self):
+        self.rtpSender=None
         pass
 
 
@@ -170,16 +199,35 @@ class ControlServer:
 #
 # -----------------------------------------------------------------------
 
-if __name__ == "__main__":
+def main():
     # Options parser
-    usage = "usage: %prog [options] ip-address port"
-    parser = optparse.OptionParser(usage=usage);
-    options, args = parser.parse_args()
+    parser = argparse.ArgumentParser(
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            usage="usage: %(prog)s <ip-address> <port>",
+            description=textwrap.dedent('''\
+                    This program listens for commands on the control socket.
+                    example: rtp.py 127.0.0.1 9898
+                    The commands are:
+                    * start_listner <remote-ip> <listen-ip> <listen-port>
+                    * stop_listenen
+                    * start_sender <send-ip> <send-port> <remote-ip> <remote-port>
+                    * stop_sender
+                    In SIPP the commands can be sent as follows:
+                    <exec command="echo start_listner [media_ip] 20000 [$ip] | nc localhost 9898"/>''')
+            )
 
-    if len(args) !=2:
-        parser.error("Incorrect number of arguments");
+    parser.add_argument("ip", help="control socket ip address")
+    parser.add_argument("port", type=int, help="control socket port")
+    args = parser.parse_args()
 
-    controlThrd = controllerThread(1, "control-listner", (args[0], int(args[1])) )
+    global PS
+    PS = printScreen()
+    controlThrd = ControllerThread(1, "control-listner", (args.ip, args.port) )
     controlThrd.start()
+    controlThrd.join()
 
-    print "Exiting Main Thread"
+    PS.restore()
+
+
+if __name__ == "__main__":
+    main()
