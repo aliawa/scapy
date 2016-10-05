@@ -3,8 +3,31 @@
 import sys, getopt, random, os, logging, time, argparse
 from scapy.all import *
 
+# ---------------------------------------------------------------------------
+#                               Helpers
+# ---------------------------------------------------------------------------
+
 gLogger = None
 
+class DataRceiver:
+    def __init__(self, files):
+    pkts = []
+    for f in files:
+        try:
+            mydata = open(f, 'r').read()
+            s = Template(mydata).substitute(state)
+            pkts.append(s)
+        except FileNotFoundError:
+            log(logging.ERROR, "File %s not found", f)
+
+    self.data = ''.join(pkts)
+
+    def recive(data):
+        if (self.data.startswith(data)):
+            self.data = self.data[len(data):]
+        if (len(self.data) == 0 ):
+            return True
+        return False
 
 # ---------------------------------------------------------------------------
 #                               TCP Protocol
@@ -37,6 +60,7 @@ def initState(args, state):
     state['sport']   = args.sport
     state['dport']   = args.dport
     state['ttl']     = 100
+    state['replace'] = args.replace
 
 
 def createPacket(state, flgs, data=None):
@@ -76,15 +100,14 @@ def doHandshakeSrvr(state):
     ack = sr1(synack)
     if (ack):
         if ack[TCP].flags & TCPFLAGS_ACK:
-            log("received ack from destination", Log.INFO)
+            log(logging.INFO, "received ack from destination")
             state['ack_num'] = synack_req.seq +1 
         elif FL & TCPFLAGS.RST:
-            log("received RST from destination", Log.INFO)
+            log(logging.INFO, "received RST from destination")
             return False
     else:
-        log("did not receive ack from destination", Log.ERROR)
+        log(logging.INFO, "did not receive ack from destination")
         return False
-
 
 
 def doHandshakeClnt(state):
@@ -94,18 +117,18 @@ def doHandshakeClnt(state):
     if (synack):
         FL = synack[TCP].flags 
         if FL & TCPFLAGS.SYN and FL & TCPFLAGS.ACK:
-            log("received synack from destination", Log.INFO)
-            state['ack_num'] = synack_req.seq +1 
+            log(logging.INFO, "received synack from destination")
+            state['ack_num'] = synack.seq +1 
         elif FL & TCPFLAGS.RST:
-            log("received RST from destination", Log.INFO)
+            log(logging.INFO, "received RST from destination")
             return False
     else:
-        log("did not receive synack from destination", Log.ERROR)
+        log(logging.ERROR, "did not receive synack from destination")
         return False
 
 
     ack = createPacket(state, "A")
-    log("sending ack to destination", Log.INFO)
+    log(logging.INFO, "sending ack to destination")
     send(ack)
     return True
 
@@ -114,24 +137,60 @@ def doHandshakeClnt(state):
 def sendFin(state):
     finack_rec = sr1(createPacket(params, "FA"))
     if (finack_rec):
-        log("received finack from destination", Log.INFO)
+        log(logging.INFO, "received finack from destination")
         state['ack_num'] = finack_req.seq +1 
     else:
-        log("did not receive finack from destination", Log.ERROR)
+        log(logging.INFO, "did not receive finack from destination")
         return False
 
     ack_pkt = createPacket(params, "A")
-    log("sending ack to destination", Log.INFO)
+    log(logging.INFO, "sending ack to destination")
     send(ack_pkt)
     return True
 
 
-def sendData(state, order):
-    pkts = []
+def sip_preprocess(state, segs)
+    # Assemble the message
+    sipMsg = ''.join(segs)
+
+    # Do replacements
+    for (key, value in state['replace']):
+        if (value[0] == '$'):
+            value = state[value[1:]]
+        sipMsg.replace(key, value)
+
+    # Modify content-length header
+    cstart = sipMsg.find('\r\n\r\n')
+    len=0
+    if (cstart != -1):
+        len = len(sipMsg) - cstart - 4
+    re.sub('(content-length *:) *(\d+)', r'\1 {}'.format(len), s, flags=re.IGNORECASE)
+
+    # Create new segments
+    i = 0
+    pos = 0
+    for s in segs:
+        if (pos < len(sipMsg)): 
+            segs[i] = (sipMsg[i:len(s)])
+            pos+=len(s)
+        else:
+            del segs[i]
+        i+=1
+    if (pos < len(sipMsg)):
+        segs.append(sipMsg[pos:])
+
+
+def sendData(state, files, order):
+    segs = []
     for f in files:
-        mydata = open(f, 'r').read()
-        s = Template(mydata).substitute(state)
-        pkts.append(createPacket(state, "PA", mydata))
+        try:
+            mydata = open(f, 'r').read()
+            segs.append(s)
+        except FileNotFoundError:
+            log(logging.ERROR, "File %s not found", f)
+
+    sip_preprocess(segs, state.replacements)
+    pkts = [createPacket(state, "PA", s) for s in segs]
 
     for x in order:
         i = int(x)
@@ -140,6 +199,17 @@ def sendData(state, order):
             send (pkts[i-1])
         else:
             print ("ignoring pkt:", i)
+
+
+
+def recvData(state, files, order):
+    fltr = "tcp and dst port {} and dst host {} and src host {}".format(
+            state['sport'], state['srcip'], state['dstip'])
+    rcvr = DataRceiver(files)
+    sniff(store=0, stop_filter=rcvr.receive, timeout=60)
+    if (not rcvr.isDone()):
+        raise AssertionError("Data not received")
+
 
 
 
@@ -166,9 +236,9 @@ def run_scenrio(args, scenario):
 
     for act in scenario:
         if (act['action'] == 'send'):
-            sendData(act['msg'], act['order'])
+            sendData(state, act['msg'], act['order'])
         elif (act['action'] == 'recv'):
-            receive(act['msg'])
+            recvData(state, act['msg'], arc['order'])
         else:
             log(logging.ERROR, "Unknown action in scenario: %s", act['action'])
 
@@ -211,7 +281,7 @@ def main():
     config = {}
     exec(open(args.scenario).read(), config)
 
-    if (not 'seq' in config):
+    if ('seq' not in config):
         log(logging.ERROR, "Config file is empty, exiting")
         sys.exit()
     elif (len(config['seq']) == 0):
