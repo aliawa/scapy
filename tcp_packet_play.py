@@ -10,24 +10,33 @@ from scapy.all import *
 gLogger = None
 
 class DataRceiver:
-    def __init__(self, files):
-    pkts = []
-    for f in files:
-        try:
-            mydata = open(f, 'r').read()
-            s = Template(mydata).substitute(state)
-            pkts.append(s)
-        except FileNotFoundError:
-            log(logging.ERROR, "File %s not found", f)
+    def __init__(self):
+        self.sipMsg = ''
+        self.state  = 0
+        self.len    = 0
 
-    self.data = ''.join(pkts)
+    def receive(self, pkt):
+        if (Raw not in pkt):
+            return False
 
-    def recive(data):
-        if (self.data.startswith(data)):
-            self.data = self.data[len(data):]
-        if (len(self.data) == 0 ):
-            return True
+        self.sipMsg = "{}{}".format(self.sipMsg, pkt[Raw].load)
+        if (self.state == 0):
+            pos = self.sipMsg.find('\r\n\r\n')
+            if (pos != -1):
+                m = re.match('content-length *: *(\d+)', self.sipMsg, flags=re.IGNORECASE)
+                self.len = pos + 4 + int(m.group(0))
+                self.state = 1
+                if (len(sipMsg) > self.len):
+                    self.state=3
+                    return True
+        elif (self.state == 2):
+            if (len(self.sipMsg) > self.len):
+                self.state=3
+                return True
         return False
+
+    def isDone(self):
+        return (self.state == 3)
 
 # ---------------------------------------------------------------------------
 #                               TCP Protocol
@@ -60,7 +69,6 @@ def initState(args, state):
     state['sport']   = args.sport
     state['dport']   = args.dport
     state['ttl']     = 100
-    state['replace'] = args.replace
 
 
 def createPacket(state, flgs, data=None):
@@ -149,22 +157,22 @@ def sendFin(state):
     return True
 
 
-def sip_preprocess(state, segs)
+def sip_preprocess(state, segs, replace):
     # Assemble the message
     sipMsg = ''.join(segs)
 
     # Do replacements
-    for (key, value in state['replace']):
+    for key, value in replace.items():
         if (value[0] == '$'):
-            value = state[value[1:]]
+            value = str(state[value[1:]])
         sipMsg.replace(key, value)
 
     # Modify content-length header
     cstart = sipMsg.find('\r\n\r\n')
-    len=0
+    mlen=0
     if (cstart != -1):
-        len = len(sipMsg) - cstart - 4
-    re.sub('(content-length *:) *(\d+)', r'\1 {}'.format(len), s, flags=re.IGNORECASE)
+        mlen = len(sipMsg) - cstart - 4
+    re.sub('(content-length *:) *(\d+)', r'\1 {}'.format(mlen), sipMsg, flags=re.IGNORECASE)
 
     # Create new segments
     i = 0
@@ -180,7 +188,7 @@ def sip_preprocess(state, segs)
         segs.append(sipMsg[pos:])
 
 
-def sendData(state, files, order):
+def sendData(state, files, order, replace):
     segs = []
     for f in files:
         try:
@@ -189,7 +197,7 @@ def sendData(state, files, order):
         except FileNotFoundError:
             log(logging.ERROR, "File %s not found", f)
 
-    sip_preprocess(segs, state.replacements)
+    sip_preprocess(state, segs, replace)
     pkts = [createPacket(state, "PA", s) for s in segs]
 
     for x in order:
@@ -205,7 +213,7 @@ def sendData(state, files, order):
 def recvData(state, files, order):
     fltr = "tcp and dst port {} and dst host {} and src host {}".format(
             state['sport'], state['srcip'], state['dstip'])
-    rcvr = DataRceiver(files)
+    rcvr = DataRceiver()
     sniff(store=0, stop_filter=rcvr.receive, timeout=60)
     if (not rcvr.isDone()):
         raise AssertionError("Data not received")
@@ -222,7 +230,7 @@ def log(*args):
         gLogger.log(*args)
 
 
-def run_scenrio(args, scenario):
+def run_scenrio(args, scenario, replacements):
     state = {}
     initState(args, state)
 
@@ -236,9 +244,9 @@ def run_scenrio(args, scenario):
 
     for act in scenario:
         if (act['action'] == 'send'):
-            sendData(state, act['msg'], act['order'])
+            sendData(state, act['msg'], act['order'], replacements)
         elif (act['action'] == 'recv'):
-            recvData(state, act['msg'], arc['order'])
+            recvData(state, act['msg'], act['order'])
         else:
             log(logging.ERROR, "Unknown action in scenario: %s", act['action'])
 
@@ -289,7 +297,7 @@ def main():
         sys.exit()
 
 
-    run_scenrio(args, config['seq'])
+    run_scenrio(args, config['seq'], config['replacements'])
 
 if __name__ == "__main__":
     main()
