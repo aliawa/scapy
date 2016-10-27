@@ -1,42 +1,68 @@
  #!/usr/bin/python
+ 
 
-import sys, getopt, random, os, logging, time, argparse
+import sys, random, os, logging, time, argparse
+import xml.etree.ElementTree as ET
+from string import Template
 from scapy.all import *
+from random import randint
 
 # ---------------------------------------------------------------------------
 #                               Helpers
 # ---------------------------------------------------------------------------
 
-gLogger = None
 
 class DataRceiver:
-    def __init__(self):
-        self.sipMsg = ''
-        self.state  = 0
-        self.len    = 0
+    # States:
+    # 0: message not complete
+    # 2: headers are complete. waiting for content
+    def __init__(self, state):
+        self.tcp_state = state
+        self.sipMsg    = ''
+        self.sip_state = 0 
+        self.len       = 0
+        self.regex     = re.compile('content-length *: *(\d+)', flags=re.IGNORECASE)
 
     def receive(self, pkt):
         if (Raw not in pkt):
             return False
+        if (TCP in pkt and pkt[TCP].sport == self.tcp_state['dport']):
+            self.tcp_state['ack_num'] = pkt.seq + len(pkt[Raw].load)
+            send(createPacket(self.tcp_state, "A"))
+        else:
+            return False
 
         self.sipMsg = "{}{}".format(self.sipMsg, pkt[Raw].load)
-        if (self.state == 0):
+        if (self.sip_state == 0):
             pos = self.sipMsg.find('\r\n\r\n')
             if (pos != -1):
-                m = re.match('content-length *: *(\d+)', self.sipMsg, flags=re.IGNORECASE)
-                self.len = pos + 4 + int(m.group(0))
-                self.state = 1
-                if (len(sipMsg) > self.len):
-                    self.state=3
+                m = self.regex.search(self.sipMsg)
+                if m:
+                    self.len = pos + 4 + int(m.group(1))
+                    if (len(self.sipMsg) >= self.len):
+                        self.onComplete()
+                        return True
+                    else:
+                        self.sip_state=2
+                else:
+                    self.len = pos + 4
+                    self.onComplete()
                     return True
-        elif (self.state == 2):
+        elif (self.sip_state == 2):
             if (len(self.sipMsg) > self.len):
-                self.state=3
+                self.onComplete()
                 return True
         return False
 
+    def onComplete(self):
+        log(logging.INFO, "received:\n-----------------\n%s", self.sipMsg)
+        self.sipMsg = self.sipMsg[self.len:]
+        self.sip_state  = 3 
+        self.len    = 0
+    
     def isDone(self):
-        return (self.state == 3)
+        return self.sip_state == 3
+
 
 # ---------------------------------------------------------------------------
 #                               TCP Protocol
@@ -54,21 +80,24 @@ class TCPFLAGS:
     CWR = 0x80
 
 
-
-def initState(args, state):
+def initState(args):
+    state = {}
     if args.seqnum:
         state['seq_num'] = args.seqnum
     else:
         state['seq_num'] = random.randint(1, 65534)
-    state['ip_id']   = 1
-    state['ack_num'] = 0
-    state['srcmac']  = args.srcmac
-    state['destmac'] = args.dstmac
-    state['srcip']   = args.srcip
-    state['dstip']   = args.dstip
-    state['sport']   = args.sport
-    state['dport']   = args.dport
-    state['ttl']     = 100
+
+    state['srcmac']     = args.srcmac
+    state['destmac']    = args.dstmac
+    state['ip_id']      = 1
+    state['ack_num']    = 0
+    state['ttl']        = 100
+    state['remote_seq'] = 0
+    state['srcip']      = args.srcip
+    state['dstip']      = args.dstip
+    state['sport']      = args.sport
+    state['dport']      = args.dport
+    return state
 
 
 def createPacket(state, flgs, data=None):
@@ -141,9 +170,8 @@ def doHandshakeClnt(state):
     return True
 
 
-
 def sendFin(state):
-    finack_rec = sr1(createPacket(params, "FA"))
+    finack_rec = sr1(createPacket(state, "FA"))
     if (finack_rec):
         log(logging.INFO, "received finack from destination")
         state['ack_num'] = finack_req.seq +1 
@@ -151,70 +179,62 @@ def sendFin(state):
         log(logging.INFO, "did not receive finack from destination")
         return False
 
-    ack_pkt = createPacket(params, "A")
+    ack_pkt = createPacket(state, "A")
     log(logging.INFO, "sending ack to destination")
     send(ack_pkt)
     return True
 
 
-def sip_preprocess(state, segs, replace):
-    # Assemble the message
-    sipMsg = ''.join(segs)
-
-    # Do replacements
-    for key, value in replace.items():
-        if (value[0] == '$'):
-            value = str(state[value[1:]])
-        sipMsg.replace(key, value)
+def sip_preprocess(config, msg):
+    sipTemplate = Template(msg)
+    sipMsg = sipTemplate.substitute(config).strip()
+    lines = [ln.strip() for ln in sipMsg.splitlines()]
+    sipMsg = "{}\r\n".format("\r\n".join(lines))
 
     # Modify content-length header
     cstart = sipMsg.find('\r\n\r\n')
     mlen=0
     if (cstart != -1):
         mlen = len(sipMsg) - cstart - 4
-    re.sub('(content-length *:) *(\d+)', r'\1 {}'.format(mlen), sipMsg, flags=re.IGNORECASE)
+    sipMsg = sipMsg.replace("X#X#X", "{}".format(mlen))
+    if not mlen:
+        sipMsg = "{}\r\n".format(sipMsg)
 
-    # Create new segments
-    i = 0
-    pos = 0
-    for s in segs:
-        if (pos < len(sipMsg)): 
-            segs[i] = (sipMsg[i:len(s)])
-            pos+=len(s)
-        else:
-            del segs[i]
-        i+=1
-    if (pos < len(sipMsg)):
-        segs.append(sipMsg[pos:])
+    return sipMsg
 
 
-def sendData(state, files, order, replace):
-    segs = []
-    for f in files:
-        try:
-            mydata = open(f, 'r').read()
-            segs.append(s)
-        except FileNotFoundError:
-            log(logging.ERROR, "File %s not found", f)
 
-    sip_preprocess(state, segs, replace)
-    pkts = [createPacket(state, "PA", s) for s in segs]
+def sendData(config, state, act):
 
-    for x in order:
+    msg = sip_preprocess(config, act['msg'])
+
+    # create segments
+    pkts=[]
+    size = act['seg_size']
+    for pos in range(0,len(msg),size):
+        pkts.append(createPacket(state, "PA", msg[pos:pos+size] ))
+        
+    # send segments
+    for x in act['order']:
         i = int(x)
         if i <= len(pkts):
             print ("sending pkt:", i)
             send (pkts[i-1])
+            pkts[i-1][IP].ttl = 0 #mark as sent
         else:
             print ("ignoring pkt:", i)
 
+    # send remaining packets
+    for  x in pkts:
+        if x[IP].ttl:
+            send (x)
 
 
-def recvData(state, files, order):
+def recvData(config, state, act):
     fltr = "tcp and dst port {} and dst host {} and src host {}".format(
             state['sport'], state['srcip'], state['dstip'])
-    rcvr = DataRceiver()
-    sniff(store=0, stop_filter=rcvr.receive, timeout=60)
+    rcvr = DataRceiver(state)
+    sniff(store=0, stop_filter=rcvr.receive, filter=fltr, timeout=60)
     if (not rcvr.isDone()):
         raise AssertionError("Data not received")
 
@@ -225,15 +245,13 @@ def recvData(state, files, order):
 #                                  Framework
 # ---------------------------------------------------------------------------
 
+gLogger = None
 def log(*args):
     if (gLogger):
         gLogger.log(*args)
 
 
-def run_scenrio(args, scenario, replacements):
-    state = {}
-    initState(args, state)
-
+def run_scenrio(config, state, scenario):
     if (scenario[0]['action']=='recv'):
         doHandshakeSrvr(state)
     elif(scenario[0]['action']=='send'):
@@ -244,21 +262,58 @@ def run_scenrio(args, scenario, replacements):
 
     for act in scenario:
         if (act['action'] == 'send'):
-            sendData(state, act['msg'], act['order'], replacements)
+            sendData(config, state, act)
         elif (act['action'] == 'recv'):
-            recvData(state, act['msg'], act['order'])
+            recvData(config, state, act)
         else:
             log(logging.ERROR, "Unknown action in scenario: %s", act['action'])
+
 
 # Iptables configuration (Drop outgoing RST)
 def setIpTableRule(params):
     iptables_flush_cmd = 'iptables -F'
     iptables_cmd = 'iptables -A OUTPUT -p tcp -d {} --tcp-flags RST  RST --destination-port {} -j DROP'.format(
-            params.destip, params.dport)
+            params.dstip, params.dport)
     os.system(iptables_flush_cmd)
     os.system(iptables_cmd)
 
 
+def initConfig(args):
+    config = {}
+    config['local_ip']    = args.srcip
+    config['remote_ip']   = args.dstip
+    config['local_port']  = args.sport
+    config['remote_port'] = args.dport
+    config['branch']      = "z9hG4bKbe".format(randint(1000,9999))
+    config['transport']   = 'TCP'
+    config['call_id']     = '5a2fb8b1-3c6d8673@{}'.format(randint(1111,7070707))
+    config['media_ip']    = args.srcip
+    config['media_port']  = randint(6000,65000)
+    config['pid']         = os.getpid()
+    config['len']         = 'X#X#X'
+    return config
+
+
+def initLogging(args):
+    if (args.verbose):
+        global gLogger
+        gLogger = logging.getLogger('tcp_packet_sender')
+        gLogger.setLevel(logging.DEBUG)
+        gLogger.addHandler(logging.FileHandler('send.log', mode='w'))
+
+
+def loadScenario(scen):
+    root = ET.parse(scen).getroot()
+    scenario = []
+    for child in root:
+        act={}
+        act['action'] = child.tag
+        act['msg'] = child.text
+        act['seg_size'] = int(child.attrib.get('seg_size', '1'))
+        act['order'] = child.attrib.get('order', '1').split(',')
+        scenario.append(act)
+    return scenario
+    
 
 # ---------------------------------------------------------------------------
 #                                   Main
@@ -270,7 +325,7 @@ def main():
     parser.add_argument('-i', '--setipt', action='store_true', help='set iptables to reject RST packets from src host')
     parser.add_argument('-s', '--srcip', required=True, help='source ip address')
     parser.add_argument('-d', '--dstip', help='destination ip address')
-    parser.add_argument('-r', '--sport' , type=int, required=True, help='source port') 
+    parser.add_argument('-r', '--sport' , type=int, default=randint(1025,65500), help='source port') 
     parser.add_argument('-p', '--dport',  type=int, help='destination port')
     parser.add_argument('-1', '--srcmac', help='source mac address')
     parser.add_argument('-2', '--dstmac', help='destination mac address')
@@ -279,25 +334,16 @@ def main():
 
     args=parser.parse_args()
 
-    if (args.verbose):
-        global gLogger
-        gLogger = logging.getLogger('tcp_packet_sender')
-        gLogger.setLevel(logging.DEBUG)
-        gLogger.addHandler(logging.FileHandler('tcp_packet_sender.log', mode='w'))
-    
+    if args.setipt:
+        setIpTableRule(args)
+        return
 
-    config = {}
-    exec(open(args.scenario).read(), config)
+    initLogging(args)
+    scenario = loadScenario(args.scenario)
+    config   = initConfig(args)
+    state    = initState(args)
 
-    if ('seq' not in config):
-        log(logging.ERROR, "Config file is empty, exiting")
-        sys.exit()
-    elif (len(config['seq']) == 0):
-        log(logging.ERROR, "Scenario is missing in config file, exiting")
-        sys.exit()
-
-
-    run_scenrio(args, config['seq'], config['replacements'])
+    run_scenrio(config, state, scenario)
 
 if __name__ == "__main__":
     main()
