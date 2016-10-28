@@ -210,10 +210,22 @@ def sendData(config, state, act):
 
     # create segments
     pkts=[]
-    size = act['seg_size']
-    for pos in range(0,len(msg),size):
-        pkts.append(createPacket(state, "PA", msg[pos:pos+size] ))
-        
+
+    # segmentation policy
+    if 'segs' in act:
+        pos=0
+        for size in act['segs']:
+            pkts.append(createPacket(state, "PA", msg[pos:pos+int(size)] ))
+            pos += int(size)
+        if (len (msg[pos:])):
+            pkts.append(createPacket(state, "PA", msg[pos:] ))
+    elif 'seg_size' in act:
+        size = act['seg_size']
+        for pos in range(0,len(msg),size):
+            pkts.append(createPacket(state, "PA", msg[pos:pos+size] ))
+    else:
+        pkts.append(createPacket(state, "PA", msg ))
+
     # send segments
     for x in act['order']:
         i = int(x)
@@ -309,7 +321,10 @@ def loadScenario(scen):
         act={}
         act['action'] = child.tag
         act['msg'] = child.text
-        act['seg_size'] = int(child.attrib.get('seg_size', '1'))
+        if 'seg_size' in child.attrib:
+            act['seg_size'] = int(child.attrib['seg_size'])
+        elif 'segs' in child.attrib:
+            act['segs'] = child.attrib['segs'].split(',')
         act['order'] = child.attrib.get('order', '1').split(',')
         scenario.append(act)
     return scenario
