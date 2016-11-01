@@ -52,7 +52,7 @@ class DataRceiver:
                     self.onComplete()
                     return True
         elif (self.sip_state == 2):
-            if (len(self.sipMsg) > self.len):
+            if (len(self.sipMsg) >= self.len):
                 self.onComplete()
                 return True
         return False
@@ -179,6 +179,7 @@ def doHandshakeClnt(state):
 
     ack = createPacket(state, "A")
     log(logging.INFO, "sending ack to destination")
+    time.sleep(1)
     send(ack)
     return True
 
@@ -366,7 +367,7 @@ def loadScenario(scen):
         act['order'] = child.attrib.get('order', '1').split(',')
         scenario.append(act)
     return scenario
-    
+
 def scapy_conf():
     # Don't throw warnings
     logging.getLogger("scapy.runtime").setLevel(logging.INFO)
