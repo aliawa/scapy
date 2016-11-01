@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 from string import Template
 from scapy.all import *
 from random import randint
+import string
 
 # ---------------------------------------------------------------------------
 #                               Helpers
@@ -16,12 +17,14 @@ class DataRceiver:
     # States:
     # 0: message not complete
     # 2: headers are complete. waiting for content
-    def __init__(self, state):
+    def __init__(self, config, state):
         self.tcp_state = state
         self.sipMsg    = ''
-        self.sip_state = 0 
         self.len       = 0
         self.regex     = re.compile('content-length *: *(\d+)', flags=re.IGNORECASE)
+        self.cfg       = config
+        self.sip_state = 0
+        self.setState(0)
 
     def receive(self, pkt):
         if (Raw not in pkt):
@@ -43,7 +46,7 @@ class DataRceiver:
                         self.onComplete()
                         return True
                     else:
-                        self.sip_state=2
+                        self.setState(2)
                 else:
                     self.len = pos + 4
                     self.onComplete()
@@ -55,13 +58,23 @@ class DataRceiver:
         return False
 
     def onComplete(self):
-        log(logging.INFO, "received:\n-----------------\n%s", self.sipMsg)
+        msg = self.sipMsg[:self.len]
+        log(logging.INFO, "received:\n-----------------\n%s", msg)
+
+        if (not msg.startswith("SIP/2.0")):
+            for l in msg.splitlines():
+                updateConfig(self.cfg, l.partition(':'))
+
         self.sipMsg = self.sipMsg[self.len:]
-        self.sip_state  = 3 
+        self.setState(3)
         self.len    = 0
     
     def isDone(self):
         return self.sip_state == 3
+
+    def setState(self, st):
+        log(logging.DEBUG, "receiver state: {}->{}". format(self.sip_state, st))
+        self.sip_state = st
 
 
 # ---------------------------------------------------------------------------
@@ -127,18 +140,18 @@ def createPacket(state, flgs, data=None):
 
 
 
-def doHandshakeSrvr(state):
-    fltr= "dst host {} and dst port {} and tcp[13]=2".format(
-            state['sport'], state['srcip'])
-    pkts = sniff(filter=fltr, count=1);
-    state['ack_num'] = pkts[0].seq +1 
-
+def doHandshakeSrvr(config, state):
+    fltr= "tcp[13] = 0x02 and dst host {} and tcp dst port {}".format(state['srcip'], state['sport'] )
+    pkts = sniff(filter=fltr, count=1)
+    state['dport'] = pkts[0][TCP].sport
+    state['dstip'] = pkts[0][IP].src
+    state['ack_num'] = pkts[0].seq +1
     synack = createPacket(state, "SA")
     ack = sr1(synack)
     if (ack):
-        if ack[TCP].flags & TCPFLAGS_ACK:
+        if ack[TCP].flags & TCPFLAGS.ACK:
             log(logging.INFO, "received ack from destination")
-            state['ack_num'] = synack_req.seq +1 
+            return True
         elif FL & TCPFLAGS.RST:
             log(logging.INFO, "received RST from destination")
             return False
@@ -230,11 +243,11 @@ def sendData(config, state, act):
     for x in act['order']:
         i = int(x)
         if i <= len(pkts):
-            print ("sending pkt:", i)
+            print ("sending pkt:{}".format(i))
             send (pkts[i-1])
             pkts[i-1][IP].ttl = 0 #mark as sent
         else:
-            print ("ignoring pkt:", i)
+            print ("ignoring pkt:{}".format(i))
 
     # send remaining packets
     for  x in pkts:
@@ -245,7 +258,7 @@ def sendData(config, state, act):
 def recvData(config, state, act):
     fltr = "tcp and dst port {} and dst host {} and src host {}".format(
             state['sport'], state['srcip'], state['dstip'])
-    rcvr = DataRceiver(state)
+    rcvr = DataRceiver(config, state)
     sniff(store=0, stop_filter=rcvr.receive, filter=fltr, timeout=60)
     if (not rcvr.isDone()):
         raise AssertionError("Data not received")
@@ -265,17 +278,29 @@ def log(*args):
 
 def run_scenrio(config, state, scenario):
     if (scenario[0]['action']=='recv'):
-        doHandshakeSrvr(state)
+        if doHandshakeSrvr(config, state):
+            config['remote_port'] = state['dport']
+            config['remote_ip']   = state['dstip']
+        else:
+            log(logging.ERROR, "Server Handshake failed")
+            sys.exit()
+
     elif(scenario[0]['action']=='send'):
-        doHandshakeClnt(state)
+        if not doHandshakeClnt(state):
+            log(logging.ERROR, "Client Handshake failed")
+            sys.exit()
     else:
         log(logging.ERROR, "Unknown action in scenario: %s, exiting", scenario[0]['action'])
         sys.exit()
+    
+    print ("Handshake done: {}:{}".format(config['remote_ip'], config['remote_port']))
 
     for act in scenario:
         if (act['action'] == 'send'):
+            print ("send action")
             sendData(config, state, act)
         elif (act['action'] == 'recv'):
+            print ("receive action")
             recvData(config, state, act)
         else:
             log(logging.ERROR, "Unknown action in scenario: %s", act['action'])
@@ -288,6 +313,19 @@ def setIpTableRule(params):
             params.dstip, params.dport)
     os.system(iptables_flush_cmd)
     os.system(iptables_cmd)
+
+
+def updateConfig(config, hdr):
+    hdrs = {
+        'via'    : 'last_Via',
+        'to'     : 'last_To',
+        'from'   : 'last_From',
+        'call-id': 'last_Call_ID',
+        'contact': 'last_Contact',
+        'cseq'   : 'last_CSeq'
+        }
+    if hdr[0].lower() in hdrs:
+        config[hdrs[hdr[0].lower()]]= "{}:{}".format(hdr[0],hdr[2])
 
 
 def initConfig(args):
@@ -329,6 +367,11 @@ def loadScenario(scen):
         scenario.append(act)
     return scenario
     
+def scapy_conf():
+    # Don't throw warnings
+    logging.getLogger("scapy.runtime").setLevel(logging.INFO)
+    # Don't output Sending packet .. type of messages from scapy
+    conf.verb = 0
 
 # ---------------------------------------------------------------------------
 #                                   Main
@@ -353,6 +396,7 @@ def main():
         setIpTableRule(args)
         return
 
+    scapy_conf()
     initLogging(args)
     scenario = loadScenario(args.scenario)
     config   = initConfig(args)
