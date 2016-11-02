@@ -42,6 +42,8 @@ class DataRceiver:
                 m = self.regex.search(self.sipMsg)
                 if m:
                     self.len = pos + 4 + int(m.group(1))
+                    print ("Calculated Length={}, Received Length={}".format(self.len, 
+                        len(self.sipMsg)))
                     if (len(self.sipMsg) >= self.len):
                         self.onComplete()
                         return True
