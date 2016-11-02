@@ -300,6 +300,7 @@ def run_scenrio(config, state, scenario):
 
     for act in scenario:
         if (act['action'] == 'send'):
+            time.sleep(1)
             print ("send action")
             sendData(config, state, act)
         elif (act['action'] == 'recv'):
