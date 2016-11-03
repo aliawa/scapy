@@ -353,6 +353,7 @@ def initConfig(args):
     config['media_port']  = randint(6000,65000)
     config['pid']         = os.getpid()
     config['len']         = 'X#X#X'
+    config['tag']         = "{:x}".format(randint(100000000,500000000))
     return config
 
 
