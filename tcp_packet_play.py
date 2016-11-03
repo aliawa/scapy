@@ -303,14 +303,17 @@ def run_scenrio(config, state, scenario):
 
     for act in scenario:
         if (act['action'] == 'send'):
-            time.sleep(1)
-            showStatus("Sending: {}".format(act["msg"].lstrip().partition(' ')[0]))
+            showStatus("Sending: {}".format(act["id"]))
             sendData(config, state, act)
             print
         elif (act['action'] == 'recv'):
-            showStatus("Recive: {}".format(act["response"]))
+            showStatus("Receive: {}".format(act["id"]))
             recvData(config, state, act)
             print
+        elif (act['action'] == 'pause'):
+            delay = float(act['milliseconds'])/1000.0
+            print ("Pause: {} sec.".format(delay))
+            time.sleep(delay)
         else:
             log(logging.ERROR, "Unknown action in scenario: %s", act['action'])
 
@@ -367,13 +370,31 @@ def loadScenario(scen):
     for child in root:
         act={}
         act['action'] = child.tag
-        act['msg'] = child.text
-        if 'seg_size' in child.attrib:
-            act['seg_size'] = int(child.attrib['seg_size'])
-        elif 'segs' in child.attrib:
-            act['segs'] = child.attrib['segs'].split(',')
-        act['order'] = child.attrib.get('order', '1').split(',')
-        act['response'] = child.attrib.get('response', '')
+        if act['action'] == "pause":
+            act['milliseconds'] = child.attrib['milliseconds']
+        elif act['action'] == "recv":
+            if 'request' in child.attrib:
+                act['id'] = child.attrib['request']
+            else:
+                act['id'] = child.attrib.get('response', '')
+        elif act['action'] == "send":
+            act['msg'] = child.text
+            if 'seg_size' in child.attrib:
+                act['seg_size'] = int(child.attrib['seg_size'])
+            elif 'segs' in child.attrib:
+                act['segs'] = child.attrib['segs'].split(',')
+            act['order'] = child.attrib.get('order', '1').split(',')
+
+            sLine = act["msg"].strip().partition('\n')[0]
+            sLineArr = sLine.split(' ')
+            if sLineArr[0] == "SIP/2.0":
+                act['id'] = sLineArr[1];
+            else:
+                act['id'] = sLineArr[0];
+        else:
+            print "Error: Unknown action"
+            return None
+
         scenario.append(act)
     return scenario
 
