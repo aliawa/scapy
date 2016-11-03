@@ -35,7 +35,7 @@ class DataRceiver:
         else:
             return False
 
-        sshowStatus(".")
+        showStatus(".")
 
         self.sipMsg = "{}{}".format(self.sipMsg, pkt[Raw].load)
         if (self.sip_state == 0):
