@@ -35,6 +35,8 @@ class DataRceiver:
         else:
             return False
 
+        sshowStatus(".")
+
         self.sipMsg = "{}{}".format(self.sipMsg, pkt[Raw].load)
         if (self.sip_state == 0):
             pos = self.sipMsg.find('\r\n\r\n')
@@ -42,21 +44,18 @@ class DataRceiver:
                 m = self.regex.search(self.sipMsg)
                 if m:
                     self.len = pos + 4 + int(m.group(1))
-                    print ("Calculated Length={}, Received Length={}".format(self.len, 
+                    log(logging.INFO, "Calculated Length={}, Received Length={}".format(self.len, 
                         len(self.sipMsg)))
                     if (len(self.sipMsg) >= self.len):
-                        self.onComplete()
-                        return True
+                        return self.onComplete()
                     else:
                         self.setState(2)
                 else:
                     self.len = pos + 4
-                    self.onComplete()
-                    return True
+                    return self.onComplete()
         elif (self.sip_state == 2):
             if (len(self.sipMsg) >= self.len):
-                self.onComplete()
-                return True
+                return self.onComplete()
         return False
 
     def onComplete(self):
@@ -70,6 +69,7 @@ class DataRceiver:
         self.sipMsg = self.sipMsg[self.len:]
         self.setState(3)
         self.len    = 0
+        return True;
     
     def isDone(self):
         return self.sip_state == 3
@@ -246,7 +246,7 @@ def sendData(config, state, act):
     for x in act['order']:
         i = int(x)
         if i <= len(pkts):
-            print ("sending pkt:{}".format(i))
+            showStatus(".")
             send (pkts[i-1])
             pkts[i-1][IP].ttl = 0 #mark as sent
         else:
@@ -278,6 +278,9 @@ def log(*args):
     if (gLogger):
         gLogger.log(*args)
 
+def showStatus(text):
+    sys.stdout.write(text)
+    sys.stdout.flush()
 
 def run_scenrio(config, state, scenario):
     if (scenario[0]['action']=='recv'):
@@ -301,11 +304,13 @@ def run_scenrio(config, state, scenario):
     for act in scenario:
         if (act['action'] == 'send'):
             time.sleep(1)
-            print ("send action")
+            showStatus("Sending: {}".format(act["msg"].lstrip().partition(' ')[0]))
             sendData(config, state, act)
+            print
         elif (act['action'] == 'recv'):
-            print ("receive action")
+            showStatus("Recive: {}".format(act["response"]))
             recvData(config, state, act)
+            print
         else:
             log(logging.ERROR, "Unknown action in scenario: %s", act['action'])
 
@@ -368,6 +373,7 @@ def loadScenario(scen):
         elif 'segs' in child.attrib:
             act['segs'] = child.attrib['segs'].split(',')
         act['order'] = child.attrib.get('order', '1').split(',')
+        act['response'] = child.attrib.get('response', '')
         scenario.append(act)
     return scenario
 
