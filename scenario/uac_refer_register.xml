@@ -55,7 +55,7 @@
 	  Expires: 3600
 	  Content-Type: multipart/mixed; boundary=uniqueBoundary
 	  Mime-Version: 1.0
-	  Content-Length: 1211
+	  Content-Length: 1212
 
 	  --uniqueBoundary
 	  Content-Type: application/x-cisco-remotecc-request+xml
