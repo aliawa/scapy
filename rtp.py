@@ -3,6 +3,8 @@
 import threading
 import argparse
 import socket
+import logging
+logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 from scapy.all import *
 import time
 import sys
@@ -14,16 +16,19 @@ class printScreen:
     def __init__(self):
         sz = os.get_terminal_size()
         self.lines = sz.lines
-        sys.stdout.write("\x1b[s")
-        print("\n")
+        sys.stdout.write("\x1b[s")  # save cursor location
+        sys.stdout.write("\x1b[{};0H\x1b[K".format(self.lines-4))
+        sys.stdout.write("\x1b[{};0H\x1b[K".format(self.lines-3))
+        sys.stdout.write("\x1b[{};0H\x1b[K".format(self.lines-2))
+        sys.stdout.write("\x1b[{};0H\x1b[K---------------------------------------".format(self.lines-1))
     def receiver(self, value):
-        sys.stdout.write("\x1b[{};0H\x1b[KReceived: 00000\tOn:  {}".format(
-            self.lines-2, value))
+        sys.stdout.write("\x1b[{};0H\x1b[KReceived: 00000  <---  {}".format(
+            self.lines-3, value))
         sys.stdout.flush()
         pass
     def sender(self, value):
-        sys.stdout.write("\x1b[{};0H\x1b[KSent:     00000\tTo:  {}".format(
-            self.lines-1, value))
+        sys.stdout.write("\x1b[{};0H\x1b[KSent:     00000  --->  {}".format(
+            self.lines-2, value))
         sys.stdout.flush()
     def status(self, value):
         sys.stdout.write("\x1b[{};0H\x1b[K{}".format(
@@ -34,14 +39,14 @@ class printScreen:
         logging.error(value)
     def received(self, value):
         sys.stdout.write("\x1b[{};11H{:0>5}\x1b[u".format(
-            self.lines-2, value))
+            self.lines-3, value))
         sys.stdout.flush()
     def sent(self, value):
         sys.stdout.write("\x1b[{};11H{:0>5}\x1b[u".format(
-            self.lines-1, value))
+            self.lines-2, value))
         sys.stdout.flush()
     def restore(self):
-        sys.stdout.write("\x1b[u")
+        sys.stdout.write("\x1b[u")  # restore cursor position
         sys.stdout.flush()
 
 PS = None
@@ -107,9 +112,9 @@ class RtpSender (threading.Thread):
         pkts = rdpcap(self.pcap)
         n=0
         for pkt in pkts:
-            sendp(Ether()/IP(dst=self.daddr[0], src=self.saddr[0])/UDP(sport=
-                self.saddr[1], dport=self.daddr[1])/pkt[Raw], verbose=0,
-                iface="eth1")
+            send(IP(dst=self.daddr[0], src=self.saddr[0])/UDP(sport=
+                self.saddr[1], dport=self.daddr[1])/pkt[Raw], verbose=0
+                )
             n+=1
             PS.sent(n)
             time.sleep(0.03) # 30 ms
@@ -149,38 +154,45 @@ class ControlServer:
     def listen(self):
         self.s.listen(1)
         while 1:
-            PS.status("Listning ...")
+            PS.status("Listning for Control connection ...")
             conn, addr = self.s.accept()
             PS.status("Accepted connection from {}".format(addr))
             while 1:
                 byteData = conn.recv(1024)
                 data = byteData.decode("utf-8")
                 if data.find("start_listner") != -1:
+                    PS.status("command: start_listner")
                     # first stop the existing rtp listner
                     self.stopListner()
                     pos = data.find("start_listner")
                     self.startListner(data[pos+14:].split(" ",3))
 
                 elif data.find("start_sender") != -1:
+                    PS.status("command: start_sender")
                     # first stop the existing rtp listner
                     self.stopSender()
                     pos = data.find("start_sender")
                     self.startSender(data[pos+13:].split(" ",4))
 
                 elif data.find("stop_listner") != -1:
+                    PS.status("command: stop_listner")
                     self.stopListner()
 
                 elif data.find("stop_sender") != -1:
+                    PS.status("command: stop_sender")
                     self.stopListner()
 
                 else:
                     conn.close()
+                    PS.status("Control connection closed");
                     break
 
     def startListner(self, args):
         if (len(args) < 3):
             PS.error("Bad start_listen command {}".format(args))
         else:
+            PS.status("starting RTP Listner on {}:{} src: ".format(args[0], int(args[1]), args[2]))
+            #PS.status("starting RTP Listner on {}:{} source {}".format(args[0], int(args[1]), args[2]))
             self.rtpListner = RtpListner(1, "rtp-listner", (args[0], int(args[1])), args[2])
             self.rtpListner.start()
 
@@ -193,6 +205,8 @@ class ControlServer:
         if (len(args) < 3):
             PS.error("Bad start_sender command".format(args))
         else:
+            PS.status("starting RTP sender {}:{} -> {}:{}".format (
+                args[0], int(args[1]), args[2], int(args[3])))
             self.rtpSender = RtpSender(2, "rtp-sender", "g711a.pcap",
                     (args[0], int(args[1])), (args[2], int(args[3])))
             self.rtpSender.start()
