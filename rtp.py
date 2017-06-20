@@ -154,38 +154,42 @@ class ControlServer:
     def listen(self):
         self.s.listen(1)
         while 1:
-            PS.status("Listning for Control connection ...")
-            conn, addr = self.s.accept()
-            PS.status("Accepted connection from {}".format(addr))
-            while 1:
-                byteData = conn.recv(1024)
-                data = byteData.decode("utf-8")
-                if data.find("start_listner") != -1:
-                    PS.status("command: start_listner")
-                    # first stop the existing rtp listner
-                    self.stopListner()
-                    pos = data.find("start_listner")
-                    self.startListner(data[pos+14:].split(" ",3))
+            try:
+                PS.status("Listning for Control connection ...")
+                conn, addr = self.s.accept()
+                PS.status("Accepted connection from {}".format(addr))
+                while 1:
+                    byteData = conn.recv(1024)
+                    data = byteData.decode("utf-8")
+                    if data.find("start_listner") != -1:
+                        PS.status("command: start_listner")
+                        # first stop the existing rtp listner
+                        self.stopListner()
+                        pos = data.find("start_listner")
+                        self.startListner(data[pos+14:].split(" ",3))
 
-                elif data.find("start_sender") != -1:
-                    PS.status("command: start_sender")
-                    # first stop the existing rtp listner
-                    self.stopSender()
-                    pos = data.find("start_sender")
-                    self.startSender(data[pos+13:].split(" ",4))
+                    elif data.find("start_sender") != -1:
+                        PS.status("command: start_sender")
+                        # first stop the existing rtp listner
+                        self.stopSender()
+                        pos = data.find("start_sender")
+                        self.startSender(data[pos+13:].split(" ",4))
 
-                elif data.find("stop_listner") != -1:
-                    PS.status("command: stop_listner")
-                    self.stopListner()
+                    elif data.find("stop_listner") != -1:
+                        PS.status("command: stop_listner")
+                        self.stopListner()
 
-                elif data.find("stop_sender") != -1:
-                    PS.status("command: stop_sender")
-                    self.stopListner()
+                    elif data.find("stop_sender") != -1:
+                        PS.status("command: stop_sender")
+                        self.stopListner()
 
-                else:
-                    conn.close()
-                    PS.status("Control connection closed");
-                    break
+                    else:
+                        conn.close()
+                        PS.status("Control connection closed");
+                        break
+
+            except OSError:
+                break;
 
     def startListner(self, args):
         if (len(args) < 3):
@@ -213,7 +217,11 @@ class ControlServer:
 
     def stopSender(self):
         self.rtpSender=None
-        pass
+
+    def shutdown(self):
+        self.stopSender()
+        self.stopListner()
+        self.s.shutdown(socket.SHUT_RDWR)
 
 
 # -----------------------------------------------------------------------
@@ -251,10 +259,13 @@ def main():
     global PS
     PS = printScreen()
     controlThrd = ControllerThread(1, "control-listner", (args.ip, args.port) )
-    controlThrd.start()
-    controlThrd.join()
-
-    PS.restore()
+    try:
+        controlThrd.start()
+        controlThrd.join()
+        PS.restore()
+    except KeyboardInterrupt:
+        PS.restore()
+        controlThrd.stop()
 
 
 if __name__ == "__main__":
