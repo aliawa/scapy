@@ -164,7 +164,7 @@ def doHandshakeSrvr(config, state):
 
 def doHandshakeClnt(state):
     syn = createPacket(state, "S")
-    synack = sr1(syn)
+    synack = sr1(syn, retry=1)
 
     if (synack):
         FL = synack[TCP].flags 
@@ -412,11 +412,12 @@ def scapy_conf():
 def main():
     parser = argparse.ArgumentParser(description="Send Receive Segmented TCP")
     parser.add_argument("-v", "--verbose", action='store_true')
-    parser.add_argument('-i', '--setipt', action='store_true', help='set iptables to reject RST packets from src host')
+    parser.add_argument('-i', '--setipt', action='store_true', 
+            help='set iptables to reject RST packets from src host')
     parser.add_argument('-s', '--srcip', required=True, help='source ip address')
-    parser.add_argument('-d', '--dstip', help='destination ip address')
+    parser.add_argument('-d', '--dstip', required=True, help='destination ip address')
     parser.add_argument('-r', '--sport' , type=int, default=randint(1025,65500), help='source port') 
-    parser.add_argument('-p', '--dport',  type=int, help='destination port')
+    parser.add_argument('-p', '--dport',  required=True, type=int, help='destination port')
     parser.add_argument('-1', '--srcmac', help='source mac address')
     parser.add_argument('-2', '--dstmac', help='destination mac address')
     parser.add_argument('--seqnum',       help='initial sequence number')
