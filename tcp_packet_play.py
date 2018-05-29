@@ -31,6 +31,7 @@ class DataRceiver:
             return False
         if (TCP in pkt and pkt[TCP].sport == self.tcp_state['dport']):
             self.tcp_state['ack_num'] = pkt.seq + len(pkt[Raw].load)
+            print("received len:{}".format(len(pkt[Raw].load)))
             send(createPacket(self.tcp_state, "A"))
         else:
             return False
@@ -187,8 +188,8 @@ def doHandshakeClnt(state):
 
 
 def sendFin(state):
-    finack_rec = sr1(createPacket(state, "FA"))
-    if (finack_rec):
+    finack_req = sr1(createPacket(state, "FA"))
+    if (finack_req):
         log(logging.INFO, "received finack from destination")
         state['ack_num'] = finack_req.seq +1 
     else:
@@ -263,6 +264,7 @@ def recvData(config, state, act):
             state['sport'], state['srcip'], state['dstip'])
     rcvr = DataRceiver(config, state)
     sniff(store=0, stop_filter=rcvr.receive, filter=fltr, timeout=60)
+    showStatus("recvData done")
     if (not rcvr.isDone()):
         raise AssertionError("Data not received")
 
@@ -316,6 +318,8 @@ def run_scenrio(config, state, scenario):
             time.sleep(delay)
         else:
             log(logging.ERROR, "Unknown action in scenario: %s", act['action'])
+
+    sendFin(state);
 
 
 # Iptables configuration (Drop outgoing RST)
@@ -427,6 +431,10 @@ def main():
 
     if args.setipt:
         setIpTableRule(args)
+        return
+
+    if not os.path.isfile(args.scenario):
+        print ("\nERROR: scenario file not found: {}\n".format(args.scenario))
         return
 
     scapy_conf()
