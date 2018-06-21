@@ -248,6 +248,7 @@ def sendData(config, state, act):
         i = int(x)
         if i <= len(pkts):
             showStatus(".")
+            print ("sending:{}".format(i))
             send (pkts[i-1])
             pkts[i-1][IP].ttl = 0 #mark as sent
         else:
