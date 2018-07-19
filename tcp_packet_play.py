@@ -145,6 +145,7 @@ def createPacket(state, flgs, data=None):
 
 def doHandshakeSrvr(config, state):
     fltr= "tcp[13] = 0x02 and dst host {} and tcp dst port {}".format(state['srcip'], state['sport'] )
+    print ("Listening on: IP:{} Port:{}".format(state['srcip'], state['sport']))
     pkts = sniff(filter=fltr, count=1)
     state['dport'] = pkts[0][TCP].sport
     state['dstip'] = pkts[0][IP].src
